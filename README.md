@@ -25,7 +25,7 @@ run a query
 package main
 
 import (
-    "fmt"
+    "context"
     "log"
     "github.com/Sczlog/dgql"
 )
@@ -52,30 +52,31 @@ or mutation
 package main
 
 import (
-    "fmt"
-    "log"
-    "github.com/Sczlog/dgql"
+	"context"
+	"log"
+
+	"github.com/Sczlog/dgql"
 )
 
-func main(){
-    client, err := dgql.NewClient("http://localhost:8080/graphql")
-    if err != nil {
-        log.Fatal(err)
-        return
-    }
-    resp, err := client.Mutation(context.Background(), "create", map[string]interface{}{
-        "input": map[string]interface{}{
-            "name": "test",
-            "price": 100,
-        },
-    }, nil)
-    if err != nil {
-        log.Fatal(err)
-        return
-    }
-    println(resp.Raw)
-    // response {"create":{"id":42007,"info":"test","name":"test","price":100}}
+func main() {
+	client, err := dgql.NewClient("http://localhost:8080/graphql")
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
+	resp, err := client.Mutation(context.Background(), "create", map[string]interface{}{
+		"price": 100,
+		"name":  "test",
+		"info":  "test",
+	}, nil)
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
+	println(resp.Raw)
+	// response {"create":{"id":42007,"info":"test","name":"test","price":100}}
 }
+
 ```
 
 ### Roadmap
