@@ -14,7 +14,7 @@ func TestQuery(t *testing.T) {
 	if !pass {
 		return
 	}
-	resp, err := client.Query(context.Background(), "product", map[string]interface{}{
+	resp, _, err := client.Query(context.Background(), "product", map[string]interface{}{
 		"id": 1,
 	}, nil)
 	pass = assert.Equal(t, nil, err, "Error querying")
@@ -30,7 +30,7 @@ func TestMutation(t *testing.T) {
 	if !pass {
 		return
 	}
-	resp, err := client.Mutation(context.Background(), "create", map[string]interface{}{
+	resp, _, err := client.Mutation(context.Background(), "create", map[string]interface{}{
 		"name":  "test",
 		"info":  "test",
 		"price": 100,

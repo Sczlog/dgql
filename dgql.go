@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
+	"net/http"
 
 	"github.com/go-resty/resty/v2"
 	"github.com/tidwall/gjson"
@@ -19,22 +20,22 @@ type GraphqlClient struct {
 	Client              *resty.Client
 }
 
-func (c *GraphqlClient) Query(ctx context.Context, operationName string, variables interface{}, headers *map[string]string) (*gjson.Result, error) {
+func (c *GraphqlClient) Query(ctx context.Context, operationName string, variables interface{}, headers *map[string]string) (*gjson.Result, *http.Header, error) {
 	document := c.queryDocumentMap[operationName]
 	return c.Raw(ctx, document, operationName, variables, headers)
 }
 
-func (c *GraphqlClient) Mutation(ctx context.Context, operationName string, variables interface{}, headers *map[string]string) (*gjson.Result, error) {
+func (c *GraphqlClient) Mutation(ctx context.Context, operationName string, variables interface{}, headers *map[string]string) (*gjson.Result, *http.Header, error) {
 	document := c.mutationDocumentMap[operationName]
 	return c.Raw(ctx, document, operationName, variables, headers)
 }
 
-func (c *GraphqlClient) UploadMutation(ctx context.Context, operationName string, variables interface{}, headers *map[string]string, files []FileConfig) (*gjson.Result, error) {
+func (c *GraphqlClient) UploadMutation(ctx context.Context, operationName string, variables interface{}, headers *map[string]string, files []FileConfig) (*gjson.Result, *http.Header, error) {
 	document := c.mutationDocumentMap[operationName]
 	return c.RawUpload(ctx, document, operationName, variables, headers, files)
 }
 
-func (c *GraphqlClient) Raw(ctx context.Context, document string, operationName string, variables interface{}, headers *map[string]string) (*gjson.Result, error) {
+func (c *GraphqlClient) Raw(ctx context.Context, document string, operationName string, variables interface{}, headers *map[string]string) (*gjson.Result, *http.Header, error) {
 	request := c.Client.R()
 	if ctx != nil {
 		request.SetContext(ctx)
@@ -56,18 +57,19 @@ func (c *GraphqlClient) Raw(ctx context.Context, document string, operationName 
 			"variables":     variables,
 		}).Post(c.Endpoint)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	result := gjson.ParseBytes(resp.Body())
 	gqlerror := result.Get("errors")
 	if gqlerror.Exists() {
-		return nil, fmt.Errorf("%v", gqlerror)
+		return nil, nil, fmt.Errorf("%v", gqlerror)
 	}
 	gqldata := result.Get("data")
 	if !gqldata.Exists() {
-		return nil, fmt.Errorf("data not found")
+		return nil, nil, fmt.Errorf("data not found")
 	}
-	return &gqldata, nil
+	respHeader := resp.Header()
+	return &gqldata, &respHeader, nil
 }
 
 type FileConfig struct {
@@ -75,7 +77,7 @@ type FileConfig struct {
 	Path  string
 }
 
-func (c *GraphqlClient) RawUpload(ctx context.Context, document string, operationName string, variables interface{}, headers *map[string]string, files []FileConfig) (*gjson.Result, error) {
+func (c *GraphqlClient) RawUpload(ctx context.Context, document string, operationName string, variables interface{}, headers *map[string]string, files []FileConfig) (*gjson.Result, *http.Header, error) {
 	request := c.Client.R()
 	if ctx != nil {
 		request.SetContext(ctx)
@@ -98,18 +100,18 @@ func (c *GraphqlClient) RawUpload(ctx context.Context, document string, operatio
 	}
 	bMapping, err := json.Marshal(mapping)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	bVariables, err := json.Marshal(variables)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	writer.WriteField("operations", fmt.Sprintf(`{"query": "%s", "operationName": "%s", "variables": %s}`, document, operationName, bVariables))
 	writer.WriteField("map", string(bMapping))
 	for i, file := range files {
 		part, err := writer.CreateFormFile(fmt.Sprintf("%d", i), "file")
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		part.Write(*file.Bytes)
 	}
@@ -119,18 +121,19 @@ func (c *GraphqlClient) RawUpload(ctx context.Context, document string, operatio
 
 	resp, err := request.Post(c.Endpoint)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	result := gjson.ParseBytes(resp.Body())
 	gqlerror := result.Get("errors")
 	if gqlerror.Exists() {
-		return nil, fmt.Errorf("%v", gqlerror)
+		return nil, nil, fmt.Errorf("%v", gqlerror)
 	}
 	gqldata := result.Get("data")
 	if !gqldata.Exists() {
-		return nil, fmt.Errorf("data not found")
+		return nil, nil, fmt.Errorf("data not found")
 	}
-	return &gqldata, nil
+	respHeaders := resp.Header()
+	return &gqldata, &respHeaders, nil
 }
 
 func NewClient(endpoint string) (*GraphqlClient, error) {
