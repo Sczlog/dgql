@@ -21,17 +21,26 @@ type GraphqlClient struct {
 }
 
 func (c *GraphqlClient) Query(ctx context.Context, operationName string, variables interface{}, headers *map[string]string) (*gjson.Result, *http.Header, error) {
-	document := c.queryDocumentMap[operationName]
+	document, ok := c.queryDocumentMap[operationName]
+	if !ok {
+		return nil, nil, fmt.Errorf("query operation %s not found", operationName)
+	}
 	return c.Raw(ctx, document, operationName, variables, headers)
 }
 
 func (c *GraphqlClient) Mutation(ctx context.Context, operationName string, variables interface{}, headers *map[string]string) (*gjson.Result, *http.Header, error) {
-	document := c.mutationDocumentMap[operationName]
+	document, ok := c.mutationDocumentMap[operationName]
+	if !ok {
+		return nil, nil, fmt.Errorf("mutation operation %s not found", operationName)
+	}
 	return c.Raw(ctx, document, operationName, variables, headers)
 }
 
 func (c *GraphqlClient) UploadMutation(ctx context.Context, operationName string, variables interface{}, headers *map[string]string, files []FileConfig) (*gjson.Result, *http.Header, error) {
-	document := c.mutationDocumentMap[operationName]
+	document, ok := c.mutationDocumentMap[operationName]
+	if !ok {
+		return nil, nil, fmt.Errorf("mutation operation %s not found", operationName)
+	}
 	return c.RawUpload(ctx, document, operationName, variables, headers, files)
 }
 
@@ -77,6 +86,12 @@ type FileConfig struct {
 	Path  string
 }
 
+type uploadOperations struct {
+	Query         string      `json:"query"`
+	OperationName string      `json:"operationName"`
+	Variables     interface{} `json:"variables"`
+}
+
 func (c *GraphqlClient) RawUpload(ctx context.Context, document string, operationName string, variables interface{}, headers *map[string]string, files []FileConfig) (*gjson.Result, *http.Header, error) {
 	request := c.Client.R()
 	if ctx != nil {
@@ -102,20 +117,32 @@ func (c *GraphqlClient) RawUpload(ctx context.Context, document string, operatio
 	if err != nil {
 		return nil, nil, err
 	}
-	bVariables, err := json.Marshal(variables)
+	operations, err := json.Marshal(uploadOperations{
+		Query:         document,
+		OperationName: operationName,
+		Variables:     variables,
+	})
 	if err != nil {
 		return nil, nil, err
 	}
-	writer.WriteField("operations", fmt.Sprintf(`{"query": "%s", "operationName": "%s", "variables": %s}`, document, operationName, bVariables))
-	writer.WriteField("map", string(bMapping))
+	if err := writer.WriteField("operations", string(operations)); err != nil {
+		return nil, nil, err
+	}
+	if err := writer.WriteField("map", string(bMapping)); err != nil {
+		return nil, nil, err
+	}
 	for i, file := range files {
 		part, err := writer.CreateFormFile(fmt.Sprintf("%d", i), "file")
 		if err != nil {
 			return nil, nil, err
 		}
-		part.Write(*file.Bytes)
+		if _, err = part.Write(*file.Bytes); err != nil {
+			return nil, nil, err
+		}
 	}
-	writer.Close()
+	if err := writer.Close(); err != nil {
+		return nil, nil, err
+	}
 	request.SetBody(bBody.Bytes())
 	request.SetHeader("Content-Type", writer.FormDataContentType())
 
@@ -141,6 +168,9 @@ func NewClient(endpoint string) (*GraphqlClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := introspection.ParseSchema()
+	client, err := introspection.ParseSchema()
+	if err != nil {
+		return nil, err
+	}
 	return client, nil
 }

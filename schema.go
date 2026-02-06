@@ -14,8 +14,6 @@ type RetrieveType struct {
 	IsNonNull bool
 }
 
-var objectTypeMap = make(map[string]*ObjectDefinition)
-
 func (t IntrospectionOfType) retrieveType(parent *RetrieveType) *RetrieveType {
 	if parent == nil {
 		parent = &RetrieveType{}
@@ -33,10 +31,14 @@ func (t IntrospectionOfType) retrieveType(parent *RetrieveType) *RetrieveType {
 }
 
 func (t RetrieveType) toArgString() string {
-	if t.IsNonNull {
-		return fmt.Sprintf("%s!", t.Name)
+	typeName := t.Name
+	if t.IsList {
+		typeName = fmt.Sprintf("[%s]", typeName)
 	}
-	return t.Name
+	if t.IsNonNull {
+		return fmt.Sprintf("%s!", typeName)
+	}
+	return typeName
 }
 
 type ObjectDefinition struct {
@@ -87,30 +89,30 @@ func (t IntrospectionType) parseObject() *ObjectDefinition {
 	return &result
 }
 
-func (o ObjectDefinition) parseObjectOutput(nested bool) string {
+func (o ObjectDefinition) parseObjectOutput(nested bool, objectTypeMap map[string]*ObjectDefinition) (string, error) {
 	fields := make([]string, 0)
 	for _, field := range o.Fields {
 		switch field.Type.Kind {
-		case "SCALAR":
-			fallthrough
-		case "ENUM":
+		case "SCALAR", "ENUM":
 			fields = append(fields, field.Name)
 		case "OBJECT":
 			if !nested {
 				typeDef := objectTypeMap[field.Type.Name]
-				if typeDef != nil {
-					nestedQuery := typeDef.parseObjectOutput(true)
-					fields = append(fields, fmt.Sprintf("%s %s ", field.Name, nestedQuery))
-				} else {
-					panic(fmt.Sprintf("Object %s not found", field.Type.Name))
+				if typeDef == nil {
+					return "", fmt.Errorf("object %s not found", field.Type.Name)
 				}
+				nestedQuery, err := typeDef.parseObjectOutput(true, objectTypeMap)
+				if err != nil {
+					return "", err
+				}
+				fields = append(fields, fmt.Sprintf("%s %s ", field.Name, nestedQuery))
 			}
 		}
 	}
-	return fmt.Sprintf("{ %s }", strings.Join(fields, " "))
+	return fmt.Sprintf("{ %s }", strings.Join(fields, " ")), nil
 }
 
-func (t IntrospectionTypeRef) parseOutputType() string {
+func (t IntrospectionTypeRef) parseOutputType(objectTypeMap map[string]*ObjectDefinition) (string, error) {
 	var typeName *RetrieveType
 	if t.OfType != nil {
 		typeName = &RetrieveType{
@@ -125,25 +127,22 @@ func (t IntrospectionTypeRef) parseOutputType() string {
 		}
 	}
 	switch typeName.Kind {
-	// for scalar type, no nest query is needed
-	case "SCALAR":
-		fallthrough
-	case "ENUM":
-		return ""
+	case "SCALAR", "ENUM":
+		return "", nil
 	case "OBJECT":
 		typeDef := objectTypeMap[typeName.Name]
-		if typeDef != nil {
-			return typeDef.parseObjectOutput(false)
-		} else {
-			panic(fmt.Sprintf("Object %s not found", typeName.Name))
+		if typeDef == nil {
+			return "", fmt.Errorf("object %s not found", typeName.Name)
 		}
+		return typeDef.parseObjectOutput(false, objectTypeMap)
 	}
-	panic(fmt.Sprintf("Unknown type %s", typeName.Name))
+	return "", fmt.Errorf("unknown type %s", typeName.Name)
 }
 
-func (i *Introspection) ParseSchema() *GraphqlClient {
+func (i *Introspection) ParseSchema() (*GraphqlClient, error) {
 	var mutationDocumentMap = make(map[string]string)
 	var queryDocumentMap = make(map[string]string)
+	var objectTypeMap = make(map[string]*ObjectDefinition)
 	var query *IntrospectionType
 	var mutation *IntrospectionType
 	for _, t := range i.Schema.Types {
@@ -155,77 +154,77 @@ func (i *Introspection) ParseSchema() *GraphqlClient {
 			} else {
 				objectTypeMap[t.Name] = t.parseObject()
 			}
-		} else if t.Kind == "UNION" {
-			//TODO: add support for union
 		}
 	}
-	for _, query := range query.Fields {
-		name := query.Name
-		var argsStr string
-		var resolverStr string
-		if query.Args != nil && len(query.Args) > 0 {
-			args := make([]string, len(query.Args))
-			args2 := make([]string, len(query.Args))
-			for idx, arg := range query.Args {
-				var typeName *RetrieveType
-				if arg.Type.OfType != nil {
-					typeName = &RetrieveType{
-						IsList:    arg.Type.Kind == "LIST",
-						IsNonNull: arg.Type.Kind == "NON_NULL",
+	if query != nil {
+		for _, queryField := range query.Fields {
+			name := queryField.Name
+			argsStr := ""
+			resolverStr := ""
+			if queryField.Args != nil && len(queryField.Args) > 0 {
+				args := make([]string, len(queryField.Args))
+				args2 := make([]string, len(queryField.Args))
+				for idx, arg := range queryField.Args {
+					var typeName *RetrieveType
+					if arg.Type.OfType != nil {
+						typeName = &RetrieveType{
+							IsList:    arg.Type.Kind == "LIST",
+							IsNonNull: arg.Type.Kind == "NON_NULL",
+						}
+						typeName = arg.Type.OfType.retrieveType(typeName)
+					} else {
+						typeName = &RetrieveType{
+							Name: arg.Type.Name,
+							Kind: arg.Type.Kind,
+						}
 					}
-					typeName = arg.Type.OfType.retrieveType(typeName)
-				} else {
-					typeName = &RetrieveType{
-						Name: arg.Type.Name,
-						Kind: arg.Type.Kind,
-					}
+					args[idx] = fmt.Sprintf("$%s: %s", arg.Name, typeName.toArgString())
+					args2[idx] = fmt.Sprintf("%s: $%s", arg.Name, arg.Name)
 				}
-				args[idx] = fmt.Sprintf("$%s: %s", arg.Name, typeName.toArgString())
-				args2[idx] = fmt.Sprintf("%s: $%s", arg.Name, arg.Name)
+				argsStr = fmt.Sprintf("(%s)", strings.Join(args, ", "))
+				resolverStr = fmt.Sprintf("(%s)", strings.Join(args2, ", "))
 			}
-			argsStr = fmt.Sprintf("(%s)", strings.Join(args, ", "))
-			resolverStr = fmt.Sprintf("(%s)", strings.Join(args2, ", "))
-		} else {
-			// resolver with no args
-			argsStr = ""
-			resolverStr = ""
+			output, err := queryField.Type.parseOutputType(objectTypeMap)
+			if err != nil {
+				return nil, err
+			}
+			queryDocumentMap[name] = fmt.Sprintf("query %s%s { %s%s %s}", name, argsStr, name, resolverStr, output)
 		}
-		output := query.Type.parseOutputType()
-		queryDocumentMap[name] = fmt.Sprintf("query %s%s { %s%s %s}", name, argsStr, name, resolverStr, output)
 	}
-	for _, mutation := range mutation.Fields {
-		name := mutation.Name
-		var argsStr string
-		var resolverStr string
-		if mutation.Args != nil && len(mutation.Args) > 0 {
-			args := make([]string, len(mutation.Args))
-			args2 := make([]string, len(mutation.Args))
-			for idx, arg := range mutation.Args {
-				var typeName *RetrieveType
-				if arg.Type.OfType != nil {
-					typeName = &RetrieveType{
-						IsList:    arg.Type.Kind == "LIST",
-						IsNonNull: arg.Type.Kind == "NON_NULL",
+	if mutation != nil {
+		for _, mutationField := range mutation.Fields {
+			name := mutationField.Name
+			argsStr := ""
+			resolverStr := ""
+			if mutationField.Args != nil && len(mutationField.Args) > 0 {
+				args := make([]string, len(mutationField.Args))
+				args2 := make([]string, len(mutationField.Args))
+				for idx, arg := range mutationField.Args {
+					var typeName *RetrieveType
+					if arg.Type.OfType != nil {
+						typeName = &RetrieveType{
+							IsList:    arg.Type.Kind == "LIST",
+							IsNonNull: arg.Type.Kind == "NON_NULL",
+						}
+						typeName = arg.Type.OfType.retrieveType(typeName)
+					} else {
+						typeName = &RetrieveType{
+							Name: arg.Type.Name,
+							Kind: arg.Type.Kind,
+						}
 					}
-					typeName = arg.Type.OfType.retrieveType(typeName)
-				} else {
-					typeName = &RetrieveType{
-						Name: arg.Type.Name,
-						Kind: arg.Type.Kind,
-					}
+					args[idx] = fmt.Sprintf("$%s: %s", arg.Name, typeName.toArgString())
+					args2[idx] = fmt.Sprintf("%s: $%s", arg.Name, arg.Name)
 				}
-				args[idx] = fmt.Sprintf("$%s: %s", arg.Name, typeName.toArgString())
-				args2[idx] = fmt.Sprintf("%s: $%s", arg.Name, arg.Name)
+				argsStr = fmt.Sprintf("(%s)", strings.Join(args, ", "))
+				resolverStr = fmt.Sprintf("(%s)", strings.Join(args2, ", "))
 			}
-			argsStr = fmt.Sprintf("(%s)", strings.Join(args, ", "))
-			resolverStr = fmt.Sprintf("(%s)", strings.Join(args2, ", "))
-		} else {
-			// resolver with no args
-			argsStr = ""
-			resolverStr = ""
+			output, err := mutationField.Type.parseOutputType(objectTypeMap)
+			if err != nil {
+				return nil, err
+			}
+			mutationDocumentMap[name] = fmt.Sprintf("mutation %s%s { %s%s %s}", name, argsStr, name, resolverStr, output)
 		}
-		output := mutation.Type.parseOutputType()
-		mutationDocumentMap[name] = fmt.Sprintf("mutation %s%s { %s%s %s}", name, argsStr, name, resolverStr, output)
 	}
 	return &GraphqlClient{
 		queryDocumentMap:    queryDocumentMap,
@@ -233,5 +232,5 @@ func (i *Introspection) ParseSchema() *GraphqlClient {
 		DefaultHeaders:      make(map[string]string),
 		Endpoint:            i.Endpoint,
 		Client:              resty.New(),
-	}
+	}, nil
 }
