@@ -79,6 +79,21 @@ func main() {
 
 ```
 
+
+### Test
+
+Run unit tests:
+
+```sh
+go test ./...
+```
+
+Run integration tests (requires `go run example/server.go` first):
+
+```sh
+go test -tags=integration ./...
+```
+
 ### Roadmap
 
 ##### v0.1.0
